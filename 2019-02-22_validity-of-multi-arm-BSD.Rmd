@@ -1,0 +1,154 @@
+---
+title: "The validity of the multi-arm Big Stick Design"
+author: "Diane Uschner"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source("bsdRand.R"); source("getImbal.R")
+```
+
+
+## Background
+
+The Big Stick Design has been shown to be highly effective to manage the 
+trade-off between balance and randomness in two-arm clinical trials. 
+It would therefore be desirable to generalize the design to multiple treatment arms.
+
+Let $n$ be the total sample size and $K$ the number of treatment groups. 
+Let $n_j(i)$ denote the number of patients in group $j$, $j = 1, \dots, K$, after the inclusion of patient 
+$i$, $i=1,\dots, n$. Let the target
+allocation ratio be $\frac{1}{K}$, resulting in a target group size $\frac{i}{K}$ after 
+the allocation of patient $i$ in each of the groups $j \in \{1, \dots, K\}$. The difference 
+of the actual group size to the target group size is thus $\tilde{D}_{ij} = n_j(i) - \frac{i}{k}$.
+Restricting $\tilde{D}_{ij}$ is equivalent to restricting 
+\[
+D_{ij} = K\cdot n_j(i) - i.
+\] 
+For $k=2$, $D_{ij}$ reduces to the difference between treatment groups, 
+as $D_{iA} = 2 \cdot n_A(i) - i = n_A(i) - n_B(i)$.
+
+Let $b>0$ be the maximum tolerated Dalance. Generalizing the two-arm BSD, we want to assure 
+$D_{ij} \leq b$ for all $i$ and $j$. 
+Let $k_{i} = \#\{j: |D_{ij}| < b\}$ be the number of groups that are not at the imbalance boundary 
+after the inclusion of patient $i$.
+The following allocation rule has been proposed:
+\[
+P(T_{i+1} = j) = \begin{cases}
+\frac{1}{k_i} & |D_{ij}| <b\\
+0 & D_{ij} = b\\
+1 & D_{ij} = -b
+\end{cases}
+\]
+
+## Implementation
+
+We want to provide an algorithm that reliably generates sequences within the 
+imbalance boundary, and with the correct probability distribution. We implemented the 
+following functions
+
+* \texttt{bsdRand(N, b, K)} - Allocation algorithm for BSD with $N$ patients, $K$ treatment groups and imbalance boundary $b$.
+* \texttt{getSum(R, K)} - For randomization sequence $R$, calculate cumulative number of patients in each of the $K$ treatment groups.
+* \texttt{getImbal(R, K)} - For randomization sequence $R$, calculate cumulative imbalance in each of the $K$ treatment groups.
+* \texttt{checkBsdSeq(R, b, K)} - Check whether R is a valid randomization sequence BSD(b, K).
+
+
+### Three treatment groups
+
+With three treatment groups the algorithm works fine. We see that the algorithm produces a valid BSD sequence that does not
+exceed the imbalance boundary at any moment. At each moment only one group reaches the lower imbalance bound.
+
+```{r}
+N = 12;  K = 3; b = 2; set.seed(123)
+(R <- bsdRand(N = N, b = b, K = K))
+# is valid BSD(b) sequence?
+checkBSDSeq(R, b, K)
+# inspect n per treatment group after each allocation
+getImbal(R, K)
+# inspect treatment group imbalances
+getImbal(R, K)
+```
+
+### Four treatment groups
+
+But with more treatment groups there can occur problems:
+
+```{r }
+# results in stopping the algorithm early
+N = 40;  K = 4; b = 6; set.seed(12412)
+(R <- bsdRand(N = N, b = b, K = K))
+```
+
+Both groups 1 and 4 were at the lower imbalance boundary. Choosing either group would exceed the imbalance boundary for the other group in the next step.
+We can look at the imbalance in each group to determine how it had come to that point:
+
+```{r}
+# Only look at realized allocations in R
+R <- R[R != 0]
+# is valid BSD(b) sequence?
+checkBSDSeq(R, b, K)
+# inspect n per treatment group after each allocation
+getImbal(R, K)
+# inspect treatment group imbalances
+getImbal(R, K)
+```
+
+Clearly the imbalance exceed the maximum tolerated imbalance at various points during the process. The allocation breaks down because the more than two groups
+are at the lower imbalance boundary, making a deterministic allocation impossible. 
+
+## Algorithm 
+The following algorithm implements the allocation rule presented above. Changes will be necessary to fulfill the criterion that the allocation sequences 
+respect the maximum tolerated imbalance.
+
+```{r}
+N = 40; b = 6; K = 4; set.seed(12412)
+
+R <- numeric(N) # Randomization sequence R = T
+n <- rep(0, K) # Vector: n = (n_1(i), ...,n_K(i)) 
+D <- rep(0, K) # Vector: D = (D_i1, ...,D_iK) 
+i <- 0 # loop index
+
+while(i < N) {
+  # vector: atMti = (groups at -b, groups at b) 
+  
+  atMti <- list(which(D <= -b), which(D >= b))
+  # vector: sumAtMti = (number of groups at -b, number of groups at b)
+  sumAtMti <- sapply(atMti, length)
+  
+  # If no group at -b or b:  sample among all groups
+  # INSTEAD: WILL NEED CRITERION ON NOT OVERSTEPPING THE BOUNDARY IN THE NEXT STEP
+  if (sum(sumAtMti) == 0) {
+    R[i + 1] <- sample(1:K, 1)
+  # Deterministic allocation if one group is at -b
+  } else if (sumAtMti[1] > 0){
+  	# at each point, only one group can be at -b!
+  	if (sumAtMti[1] > 1) {
+  	  warning(paste("More than one group is at the lower imbalance boundary. Groups =", 
+  	                  paste(atMti[[1]], collapse = ", "), ". Stopping early after", i, " allocations."))
+  	  break 
+  	}
+    # Deterministic allocation if one group is at -b
+  	R[i + 1] <- atMti[[1]]
+  }
+  # If some groups are at b: sample among those that are not at b
+  else { # sumAtMti[2] > 0 
+    notAtMti <- setdiff(1:K, atMti[[2]])
+    # Deterministic allocation if there is only one group <b
+    if(length(notAtMti) == 1){ 
+    	R[i + 1] <- notAtMti
+    }
+    else{
+    	R[i + 1] <- sample(notAtMti, 1)
+    }
+  } 
+  i <- i + 1
+  # increment the number of participants in the group that was selected
+  n[R[i]] <- n[R[i]] + 1
+  D <- K*n - i
+}
+R
+```
+
+
